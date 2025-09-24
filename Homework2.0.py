@@ -14,7 +14,7 @@ def compute_ndwi(green, nir):
         (green - nir) / (green + nir)
     )
     # Tractar valors NaN resultants
-    ndwi = np.nan_to_num(ndwi, nan=0.0)
+    ndwi = np.nan_to_num(ndwi, nan=0.0)  #cambia los np.nan por 0
     return ndwi
 
 def main():
@@ -46,10 +46,10 @@ def main():
     (np.array([0.0]), np.array([0.0]), np.array([0.0])),      # divisió per zero
     (np.array([5.0]), np.array([5.0]), np.array([0.0])),      # green = nir
     (np.array([np.nan]), np.array([5.0]), np.array([0.0])),   # valor NaN
-])
+])                                          #Hay más errores potenciales, pero de rastrerio, memoria de RAM... no tiene mucho que ver con la imagen
 def test_ndwi(green, nir, expected):
     result = compute_ndwi(green, nir)
     np.testing.assert_allclose(result, expected, rtol=1e-3, atol=1e-3)
 
 if __name__ == "__main__":
-    main()
+    main() 
