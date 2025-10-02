@@ -1,0 +1,97 @@
+import requests
+from pystac_client import Client
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import rasterio
+from urllib.parse import urlparse
+
+class STACClient:
+    def __init__(self, stac_api_url="https://earth-search.aws.element84.com/v1"):
+        self.client = Client.open(stac_api_url)
+        self.download_dir = "downloaded_images"
+        os.makedirs(self.download_dir, exist_ok=True)
+    
+    def search(self, date_range, aoi, cloud_cover=0.2, collections=["sentinel-2-l2a"]):
+        """
+        Busca imágenes en el catálogo STAC según criterios
+        
+        Args:
+            date_range: Tupla (start_date, end_date)
+            aoi: GeoJSON con área de interés
+            cloud_cover: Máximo porcentaje de nubes permitido
+            collections: Colecciones de satélites a buscar
+        """
+        search_results = self.client.search(
+            collections=collections,
+            intersects=aoi,
+            datetime=f"{date_range[0]}/{date_range[1]}",
+            query={"cloud_cover": {"lt": cloud_cover * 100}}  # STAC usa porcentaje 0-100
+        )
+        
+        items = list(search_results.items())
+        print(f"Found {len(items)} items matching criteria")
+        return items
+    
+    def _download_asset(self, item, asset_key="visual"):
+        """
+        Descarga un asset específico de un ítem STAC
+        
+        Args:
+            item: Ítem STAC con metadatos
+            asset_key: Tipo de asset a descargar ('visual', 'B04', 'B08', etc.)
+        """
+        try:
+            asset = item.assets.get(asset_key)
+            if not asset:
+                print(f"Asset {asset_key} not found in item {item.id}")
+                return None
+            
+            # Descargar el archivo
+            response = requests.get(asset.href, stream=True)
+            response.raise_for_status()
+            
+            # Guardar localmente
+            filename = os.path.join(self.download_dir, f"{item.id}_{asset_key}.tif")
+            with open(filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Downloaded: {filename}")
+            return filename
+            
+        except Exception as e:
+            print(f"Error downloading {item.id}: {e}")
+            return None
+    
+    def download_images(self, items, max_workers=4, asset_keys=["B04", "B08"]):
+        """
+        Descarga imágenes en paralelo usando ThreadPoolExecutor
+        
+        Args:
+            items: Lista de ítems STAC a descargar
+            max_workers: Número de hilos para descargas paralelas
+            asset_keys: Bandas espectrales a descargar
+        """
+        downloaded_files = []
+        
+        def download_task(item_asset):
+            item, asset_key = item_asset
+            return self._download_asset(item, asset_key)
+        
+        # Crear todas las tareas (item, asset_key)
+        tasks = []
+        for item in items:
+            for asset_key in asset_keys:
+                tasks.append((item, asset_key))
+        
+        # Ejecutar descargas en paralelo
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_task = {executor.submit(download_task, task): task for task in tasks}
+            
+            for future in as_completed(future_to_task):
+                result = future.result()
+                if result:
+                    downloaded_files.append(result)
+        
+        print(f"Downloaded {len(downloaded_files)} files using {max_workers} workers")
+        return downloaded_files
