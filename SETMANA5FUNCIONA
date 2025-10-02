@@ -1,0 +1,86 @@
+import requests
+import os
+from PIL import Image
+from io import BytesIO
+
+aoi_url = "https://raw.githubusercontent.com/thoyo-upc/bdse-cdio1/main/coastline_estimator/projects/castelldefels_h1_2025/input/polygon.geojson"
+stac_url = "https://earth-search.aws.element84.com/v1"
+collection = "sentinel-2-l2a"
+date_range = ["2025-01-01", "2025-07-01"]
+
+print("Baixant AOI...")
+aoi_geojson = requests.get(aoi_url).json()
+
+payload = {
+    "collections": [collection],
+    "intersects": aoi_geojson["features"][0]["geometry"],
+    "datetime": f"{date_range[0]}T00:00:00Z/{date_range[1]}T00:00:00Z",
+    "limit": 10,
+}
+
+print("Consultant STAC API...")
+resp = requests.post(f"{stac_url}/search", json=payload)
+resp.raise_for_status()
+data = resp.json()
+
+save_folder = "./sentinel2_rgb_images"
+os.makedirs(save_folder, exist_ok=True)
+print(f"Les imatges es guardaran a: {os.path.abspath(save_folder)}")
+
+total_saved = 0
+
+for item in data["features"]:
+    item_id = item["id"]
+    assets = item.get("assets", {})
+    
+    print(f"\nProcessem item: {item_id}")
+    
+    bands = {
+        "red": assets.get("red"),
+        "green": assets.get("green"),
+        "blue": assets.get("blue"),
+        "preview": assets.get("thumbnail"),  # jpg preview, opcional
+    }
+    
+    # Compte quantes bandes hi ha
+    available_bands = [k for k,v in bands.items() if v is not None]
+    print(f"Bandes disponibles: {available_bands}")
+    
+    # Directori per item
+    item_folder = os.path.join(save_folder, item_id)
+    os.makedirs(item_folder, exist_ok=True)
+    
+    # Funció per baixar i guardar
+    def download_and_save(url, filepath):
+        print(f" Baixant {url} ...")
+        r = requests.get(url)
+        r.raise_for_status()
+        content = r.content
+        # Si és TIFF, el convertim a JPG
+        if url.endswith(".tif") or url.endswith(".tiff"):
+            img = Image.open(BytesIO(content))
+            rgb_img = img.convert("RGB")
+            rgb_img.save(filepath, "JPEG")
+        else:
+            # si no, guardem directe (per exemple JPG)
+            with open(filepath, "wb") as f:
+                f.write(content)
+    
+    # Baixem bandes RGB si existeixen
+    for color in ["red", "green", "blue"]:
+        asset = bands.get(color)
+        if asset:
+            filename = f"{color}.jpg"  # guardem sempre com jpg
+            filepath = os.path.join(item_folder, filename)
+            download_and_save(asset["href"], filepath)
+        else:
+            print(f" Avis: no hi ha banda {color} per aquest item.")
+    
+    # També baixem el preview si existeix (més ràpid per veure)
+    if bands.get("preview"):
+        filepath = os.path.join(item_folder, "preview.jpg")
+        download_and_save(bands["preview"]["href"], filepath)
+    
+    total_saved += 1
+
+print(f"\nTotal items processats i guardats: {total_saved}")
