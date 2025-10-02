@@ -1,0 +1,166 @@
+
+
+
+
+import rasterio
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+import os
+from rasterio.enums import Resampling
+
+class ImageProcessor:
+    def __init__(self, output_dir="ndwi_results"):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+    
+    def filter_cloudy_images(self, image_paths, cloud_threshold=0.3):
+        """
+        Filtra imágenes basándose en cobertura de nubes
+        
+        Args:
+            image_paths: Lista de rutas a imágenes
+            cloud_threshold: Porcentaje máximo de nubes permitido
+        """
+        clean_images = []
+        
+        for image_path in image_paths:
+            try:
+                # En Sentinel-2, la banda SCL (Scene Classification) tiene info de nubes
+                cloud_coverage = self._calculate_cloud_coverage(image_path)
+                
+                if cloud_coverage <= cloud_threshold:
+                    clean_images.append(image_path)
+                    print(f"Clean image: {os.path.basename(image_path)} - clouds: {cloud_coverage:.2%}")
+                else:
+                    print(f"Cloudy image rejected: {os.path.basename(image_path)} - clouds: {cloud_coverage:.2%}")
+                    
+            except Exception as e:
+                print(f"Error processing {image_path}: {e}")
+        
+        print(f"Filtered {len(clean_images)} clean images from {len(image_paths)} total")
+        return clean_images
+    
+    def _calculate_cloud_coverage(self, image_path):
+        """
+        Calcula el porcentaje de nubes en una imagen usando la banda de clasificación
+        """
+        try:
+            # Para Sentinel-2, banda SCL (Scene Classification Layer)
+            # Valores 3: nubes sombra, 8-9-10: nubes medias/altas/opacas
+            with rasterio.open(image_path) as src:
+                if 'SCL' in src.descriptions:
+                    scl_band_idx = [i for i, desc in enumerate(src.descriptions) if desc == 'SCL'][0]
+                    scl_data = src.read(scl_band_idx + 1)  # +1 porque rasterio indexa desde 1
+                    
+                    cloud_pixels = np.sum((scl_data >= 3) & (scl_data <= 10))
+                    total_pixels = scl_data.size
+                    
+                    return cloud_pixels / total_pixels
+                else:
+                    # Si no hay banda SCL, estimación simple basada en reflectancia
+                    return self._estimate_clouds_from_reflectance(image_path)
+                    
+        except Exception as e:
+            print(f"Cloud detection error for {image_path}: {e}")
+            return 0.5  # Valor conservador si hay error
+    
+    def _estimate_clouds_from_reflectance(self, image_path):
+        """
+        Estimación simple de nubes basada en reflectancia en banda azul
+        """
+        try:
+            with rasterio.open(image_path) as src:
+                # Banda azul (B02) generalmente tiene alta reflectancia en nubes
+                blue_band = src.read(1)  # Ajustar índice según sensor
+                
+                # Umbral empírico para detectar nubes
+                cloud_threshold = 0.3
+                cloud_pixels = np.sum(blue_band > cloud_threshold)
+                total_pixels = blue_band.size
+                
+                return cloud_pixels / total_pixels
+                
+        except:
+            return 0.0
+    
+    def _calculate_single_ndwi(self, green_path, nir_path):
+        """
+        Calcula NDWI para un par de bandas verde y NIR
+        
+        NDWI = (Green - NIR) / (Green + NIR)
+        """
+        try:
+            with rasterio.open(green_path) as green_src:
+                green_data = green_src.read(1).astype(np.float32)
+                profile = green_src.profile
+            
+            with rasterio.open(nir_path) as nir_src:
+                nir_data = nir_src.read(1).astype(np.float32)
+            
+            # Cálculo NDWI con estabilidad numérica
+            denominator = green_data + nir_data
+            denominator[denominator == 0] = 1e-8  # Evitar división por cero
+            
+            ndwi = (green_data - nir_data) / denominator
+            
+            # Guardar resultado
+            output_filename = f"ndwi_{os.path.basename(green_path).split('_')[0]}.tif"
+            output_path = os.path.join(self.output_dir, output_filename)
+            
+            profile.update({
+                'dtype': rasterio.float32,
+                'count': 1,
+                'compress': 'lzw'
+            })
+            
+            with rasterio.open(output_path, 'w', **profile) as dst:
+                dst.write(ndwi.astype(rasterio.float32), 1)
+            
+            print(f"NDWI calculated: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            print(f"Error calculating NDWI for {green_path}: {e}")
+            return None
+    
+    def calculate_ndwi_batch(self, image_paths, processes=4):
+        """
+        Calcula NDWI para lote de imágenes usando multiprocessing
+        
+        Args:
+            image_paths: Lista de todas las bandas descargadas
+            processes: Número de procesos paralelos
+        """
+        # Agrupar bandas verde y NIR por escena
+        green_bands = [p for p in image_paths if 'B03' in p or 'green' in p]
+        nir_bands = [p for p in image_paths if 'B08' in p or 'nir' in p]
+        
+        # Emparejar bandas por escena
+        paired_bands = []
+        for green in green_bands:
+            scene_id = green.split('_')[0]
+            matching_nir = [n for n in nir_bands if scene_id in n]
+            if matching_nir:
+                paired_bands.append((green, matching_nir[0]))
+        
+        print(f"Processing {len(paired_bands)} image pairs with {processes} processes")
+        
+        if processes == 1:
+            # Procesamiento secuencial
+            results = [self._calculate_single_ndwi(green, nir) for green, nir in paired_bands]
+        else:
+            # Procesamiento paralelo
+            with ProcessPoolExecutor(max_workers=processes) as executor:
+                results = list(executor.map(
+                    lambda pair: self._calculate_single_ndwi(*pair), 
+                    paired_bands
+                ))
+        
+        # Filtrar resultados exitosos
+        successful_results = [r for r in results if r is not None]
+        print(f"Successfully processed {len(successful_results)} NDWI images")
+        
+        return successful_results
+
+
+
