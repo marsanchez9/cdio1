@@ -1,0 +1,109 @@
+import requests
+import os
+import numpy as np
+import rasterio
+from rasterio.io import MemoryFile
+import matplotlib.pyplot as plt
+
+aoi_url = "https://raw.githubusercontent.com/thoyo-upc/bdse-cdio1/main/coastline_estimator/projects/castelldefels_h1_2025/input/polygon.geojson"
+stac_url = "https://earth-search.aws.element84.com/v1"
+collection = "sentinel-2-l2a"
+date_range = ["2025-01-01", "2025-07-01"]
+
+print("Baixant AOI...")
+aoi_geojson = requests.get(aoi_url).json()
+
+payload = {
+    "collections": [collection],
+    "intersects": aoi_geojson["features"][0]["geometry"],
+    "datetime": f"{date_range[0]}T00:00:00Z/{date_range[1]}T00:00:00Z",
+    "limit": 10,
+}
+
+print("Consultant STAC API...")
+resp = requests.post(f"{stac_url}/search", json=payload)
+resp.raise_for_status()
+data = resp.json()
+
+save_folder = "./sentinel2_images4"
+os.makedirs(save_folder, exist_ok=True)
+print(f"Les imatges es guardaran a: {os.path.abspath(save_folder)}")
+
+total_saved = 0
+
+def download_tiff_as_array(url):
+    print(f" Baixant {url} ...")
+    r = requests.get(url)
+    r.raise_for_status()
+    with MemoryFile(r.content) as memfile:
+        with memfile.open() as dataset:
+            return dataset.read(1).astype(np.float32)
+
+for item in data["features"]:
+    item_id = item["id"]
+    assets = item.get("assets", {})
+
+    print(f"\nProcessem item: {item_id}")
+
+    bands = {
+        "red": assets.get("red"),
+        "green": assets.get("green"),
+        "blue": assets.get("blue"),
+        "nir": assets.get("nir"),
+        "preview": assets.get("thumbnail"),
+    }
+
+    available_bands = [k for k, v in bands.items() if v is not None]
+    print(f"Bandes disponibles: {available_bands}")
+
+    item_folder = os.path.join(save_folder, item_id)
+    os.makedirs(item_folder, exist_ok=True)
+
+    # Baixa i guarda les bandes RGB com JPG
+    for color in ["red", "green", "blue"]:
+        asset = bands.get(color)
+        if asset:
+            # Baixem la banda i la convertim a JPG amb PIL per visualitzar (si vols, ho puc afegir)
+            # Per ara, baixem i guardem directament el TIFF
+            r = requests.get(asset["href"])
+            r.raise_for_status()
+            filepath = os.path.join(item_folder, f"{color}.tif")
+            with open(filepath, "wb") as f:
+                f.write(r.content)
+            print(f" Guardada banda {color} a {filepath}")
+        else:
+            print(f" Avis: no hi ha banda {color}")
+
+    # Calcular NDWI si tenim green i nir
+    if bands.get("green") and bands.get("nir"):
+        green_arr = download_tiff_as_array(bands["green"]["href"])
+        nir_arr = download_tiff_as_array(bands["nir"]["href"])
+
+        print(" Calculant NDWI...")
+        ndwi = (green_arr - nir_arr) / (green_arr + nir_arr + 1e-10)
+
+        # Guardem NDWI en color utilitzant matplotlib
+        plt.figure(figsize=(8, 8))
+        plt.imshow(ndwi, cmap='RdYlGn')  # cmap verd-roig per NDWI, verd = aigua
+        plt.colorbar(label='NDWI')
+        plt.axis('off')
+        ndwi_path = os.path.join(item_folder, "ndwi_color.png")
+        plt.savefig(ndwi_path, bbox_inches='tight', pad_inches=0)
+        plt.close()
+        print(f" NDWI en color guardat a {ndwi_path}")
+
+    else:
+        print(" Avis: no es pot calcular NDWI (falta green o nir)")
+
+    # Baixa preview si existeix
+    if bands.get("preview"):
+        r = requests.get(bands["preview"]["href"])
+        r.raise_for_status()
+        preview_path = os.path.join(item_folder, "preview.jpg")
+        with open(preview_path, "wb") as f:
+            f.write(r.content)
+        print(f" Guardat preview a {preview_path}")
+
+    total_saved += 1
+
+print(f"\nTotal items processats i guardats: {total_saved}")
