@@ -1,0 +1,41 @@
+import os
+import rasterio
+import numpy as np
+from scipy.ndimage import convolve
+
+# Carpeta on tens les imatges descarregades
+base_folder = "./sentinel2_images4"
+
+# Kernel per detectar canvis als veïns (3x3 excloent el centre)
+kernel = np.array([[1, 1, 1],
+                   [1, 0, 1],
+                   [1, 1, 1]])
+
+# Recorre totes les carpetes d’imatges
+for root, dirs, files in os.walk(base_folder):
+    if "waterbody.tif" in files:
+        waterbody_path = os.path.join(root, "waterbody.tif")
+        print(f"Processant {waterbody_path}...")
+
+        # Obre i llegeix el GeoTIFF
+        with rasterio.open(waterbody_path) as src:
+            waterbody = src.read(1)
+            profile = src.profile
+
+        # Detecta línia de costa
+        neighbor_sum = convolve(waterbody, kernel, mode='constant', cval=0)
+        coastline = np.logical_and(waterbody == 1, neighbor_sum < 8).astype(np.uint8)
+
+        # Actualitza perfil per guardar
+        profile.update(dtype=rasterio.uint8, count=1)
+
+        # Ruta de sortida
+        coastline_path = os.path.join(root, "coastline.tif")
+
+        # Guarda resultat
+        with rasterio.open(coastline_path, 'w', **profile) as dst:
+            dst.write(coastline, 1)
+
+        print(f"  → Línia de costa guardada a {coastline_path}")
+
+print("\n✔️ Processament complet.")
