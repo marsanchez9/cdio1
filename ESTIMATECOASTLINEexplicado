@@ -1,0 +1,46 @@
+import os   #para trabjar con archivos, carpetas..
+import rasterio
+import numpy as np       #para trabajar con arreys numéricos
+from scipy.ndimage import convolve #Importa la función convolve de SciPy para aplicar filtros/convoluciones a imagenes
+
+# Carpeta on tens les imatges descarregades
+base_folder = "./sentinel2_images4"
+
+# Kernel per detectar canvis als veïns (3x3 excloent el centre), nos permite detectar lo bordes. Lo multiplicas con matriz 3x3 desde que se detecta
+# un agua, sabiendo que agua = 1 y no agua = 0.Esta matriz se va deslizando por la imagene hasta detectar toda la linea de costa. cada número 
+#representa un pixel, y los de alrededor son sus píxeles vecinos.
+kernel = np.array([[1, 1, 1],
+                   [1, 0, 1],
+                   [1, 1, 1]])
+
+# Recorre totes les carpetes d’imatges
+for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dirs = lista de subcarpetas; files = lista de archivos en la carpeta
+    if "waterbody.tif" in files:    #verifica que exista la carpeta
+        waterbody_path = os.path.join(root, "waterbody.tif")    #construye la ruta al archivo
+        print(f"Processant {waterbody_path}...")    
+
+        # Obre i llegeix el GeoTIFF
+        with rasterio.open(waterbody_path) as src:  #abre el archivo en modo lectura
+            waterbody = src.read(1) #coge la primera banda que tenga agua sabiendo que agua = 1; no agua = 0. 
+            profile = src.profile
+
+        # Detecta línia de costa
+        neighbor_sum = convolve(waterbody, kernel, mode='constant', cval=0) #Lo multiplica por el kernel y si los vecinos que son agua son <8 
+                                                                            #es una línea de costa, sino es mar.
+        coastline = np.logical_and(waterbody == 1, neighbor_sum < 8).astype(np.uint8) #np.logical_and: combina ambas condiciones → píxeles de agua con al menos un vecino de tierra.
+                                                                                    #.astype(np.uint8): convierte el resultado booleano a 0s y 1s,es decir, es o no es costa.
+
+        # Actualitza perfil per guardar
+        profile.update(dtype=rasterio.uint8, count=1) #actualiza la forma de guardar los datos, por un lado count = 1 crea una sola banda(la de costa)
+                                                        #por otro lado, dtype=rasterio.uint8 lo hace solo para ocupar menos espacio, ya que usamos 1 y 0 no floats
+
+        # Ruta de sortida
+        coastline_path = os.path.join(root, "coastline.tif") #ruta de salida para el archivo "coastline.tif" en la misma carpeta.
+
+        # Guarda resultat
+        with rasterio.open(coastline_path, 'w', **profile) as dst: 
+            dst.write(coastline, 1)     #crea un nuevo archivo y escribe la coastline
+
+        print(f"  → Línia de costa guardada a {coastline_path}")
+
+print("\n✔️ Processament complet.")
