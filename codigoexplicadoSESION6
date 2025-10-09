@@ -3,12 +3,21 @@ import rasterio
 import numpy as np       #para trabajar con arreys numéricos
 from scipy.ndimage import convolve #Importa la función convolve de SciPy para aplicar filtros/convoluciones a imagenes
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import Point, shape
 from datetime import datetime
 import pandas as pd
+from scipy import ndimage
+from rasterio.mask import mask
+import json
 
 # Carpeta on tens les imatges descarregades
 base_folder = "./sentinel2_images4"
+polygon_geojson_path = "/.polygon.geojson1" #ns que poner de nombre 
+
+# Cargar polígono del GeoJSON
+with open(polygon_geojson_path) as f:
+    geojson_data = json.load(f)
+polygon_geom = [shape(geojson_data["features"][0]["geometry"])]  # en lista, para rasterio.mask
 
 # Kernel per detectar canvis als veïns (3x3 excloent el centre), nos permite detectar lo bordes. Lo multiplicas con matriz 3x3 desde que se detecta
 # un agua, sabiendo que agua = 1 y no agua = 0.Esta matriz se va deslizando por la imagene hasta detectar toda la linea de costa. cada número 
@@ -30,11 +39,21 @@ for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dir
         waterbody_path = os.path.join(root, "waterbody.tif")    #construye la ruta al archivo
         print(f"Processant {waterbody_path}...")    
 
+        #breakpoint()
         # Obre i llegeix el GeoTIFF
         with rasterio.open(waterbody_path) as src:  #abre el archivo en modo lectura
+            out_image, out_transform = mask(src, polygon_geom, crop=True) #sirve para recortar la imagen
             waterbody = src.read(1) #coge la primera banda que tenga agua sabiendo que agua = 1; no agua = 0. 
             profile = src.profile
             transform = src.transform  # Guardamos la transformación para coordenadas, cambia píxeles a coordenadas reales
+
+            profile.update({
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform
+            }) #sirve para actualizar los metadatos de las imagenes para poder recortarlo
+
+
 
         # CORNER CASE 1: Excluir bordes del AOI (3 píxeles de cada lado), es decir de la parte de AOI elimina tres pixeles para que no
         #los confunda con tierra, simplemente no existen
@@ -46,7 +65,6 @@ for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dir
         border_mask[:, -3:] = False       # Borde derecho
         
          # CORNER CASE 2: Detectar áreas nubladas (patrones irregulares)
-        from scipy import ndimage
         
         matriz_zonas_agua, num_water_components = ndimage.label(waterbody == 1) #Encuentra zonas de agua, asigna un número único a cada zona de agua
         water_component_sizes = np.bincount(matriz_zonas_agua.ravel()) #.ravel transforma la matriz en vector, 
