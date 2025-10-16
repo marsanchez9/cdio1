@@ -1,0 +1,358 @@
+import os   #para trabjar con archivos, carpetas..
+import rasterio
+import numpy as np       #para trabajar con arreys numéricos
+from scipy.ndimage import convolve #Importa la función convolve de SciPy para aplicar filtros/convoluciones a imagenes
+import geopandas as gpd
+from shapely.geometry import Point, shape
+from datetime import datetime
+import pandas as pd
+from scipy import ndimage
+from rasterio.mask import mask
+import json
+import math
+
+# ===== FUNCIÓN PARA CALCULAR RMSE =====
+def calculate_rmse(coords_estimated, coords_ground_truth):
+    """
+    Calcula el RMSE entre coordenadas estimadas y ground truth
+    
+    Args:
+        coords_estimated: lista de tuplas (x, y) estimadas
+        coords_ground_truth: lista de tuplas (x, y) de ground truth
+    
+    Returns:
+        rmse: valor RMSE en metros
+    """
+    if len(coords_estimated) == 0 or len(coords_ground_truth) == 0:
+        return float('inf')
+    
+    # Convertir a arrays numpy para cálculos más eficientes
+    est_array = np.array(coords_estimated)
+    gt_array = np.array(coords_ground_truth)
+    
+    # Calcular distancia euclidiana para cada punto
+    distances = np.sqrt(np.sum((est_array - gt_array) ** 2, axis=1))
+    
+    # RMSE es la raíz cuadrada del promedio de los cuadrados de las distancias
+    rmse = np.sqrt(np.mean(distances ** 2))
+    
+    return rmse
+
+# =====  FUNCIÓN PARA CARGAR GROUND TRUTH =====
+def load_ground_truth(gt_file_path):
+    """
+    Carga datos de ground truth desde archivo CSV
+    
+    Args:
+        gt_file_path: ruta al archivo CSV de ground truth
+    
+    Returns:
+        lista de tuplas (x, y) con coordenadas UTM
+    """
+    try:
+        df_gt = pd.read_csv(gt_file_path)
+        # Asumimos que las columnas se llaman 'X' y 'Y' (coordenadas UTM)
+        coords = list(zip(df_gt['X'], df_gt['Y']))
+        print(f"  → Cargados {len(coords)} puntos de ground truth desde {gt_file_path}")
+        return coords
+    except Exception as e:
+        print(f"  ⚠️ Error cargando ground truth: {e}")
+        return []
+
+# =====  FUNCIÓN PARA ENCONTRAR COINCIDENCIAS MÁS CERCANAS =====
+def find_nearest_matches(coords_estimated, coords_ground_truth, max_distance=100):
+    """
+    Encuentra los puntos más cercanos entre estimaciones y ground truth
+    
+    Args:
+        coords_estimated: coordenadas estimadas
+        coords_ground_truth: coordenadas de ground truth
+        max_distance: distancia máxima para considerar coincidencia (metros)
+    
+    Returns:
+        matched_est: coordenadas estimadas que tienen match
+        matched_gt: coordenadas ground truth correspondientes
+    """
+    matched_est = []
+    matched_gt = []
+    
+    for gt_point in coords_ground_truth:
+        min_distance = float('inf')
+        nearest_est_point = None
+        
+        for est_point in coords_estimated:
+            distance = math.sqrt((gt_point[0] - est_point[0])**2 + (gt_point[1] - est_point[1])**2)
+            if distance < min_distance and distance < max_distance:
+                min_distance = distance
+                nearest_est_point = est_point
+        
+        if nearest_est_point is not None:
+            matched_est.append(nearest_est_point)
+            matched_gt.append(gt_point)
+    
+    print(f"  → Encontradas {len(matched_est)} coincidencias de {len(coords_ground_truth)} puntos GT")
+    return matched_est, matched_gt
+
+# Carpeta on tens les imatges descarregades
+base_folder = "./sentinel2_images4"
+polygon_geojson_path = "/.polygon.geojson1" #ns que poner de nombre 
+
+# ===== NUEVO: CONFIGURACIÓN GROUND TRUTH =====
+ground_truth_dates = {
+    '2017-05-23': './ground_truth/gt_2017-05-23.csv',
+    '2019-05-23': './ground_truth/gt_2019-05-23.csv',  
+    '2021-06-11': './ground_truth/gt_2021-06-11.csv'   
+}
+validation_results = []
+
+# Cargar polígono del GeoJSON
+with open(polygon_geojson_path) as f:
+    geojson_data = json.load(f)
+polygon_geom = [shape(geojson_data["features"][0]["geometry"])]  # en lista, para rasterio.mask
+
+# Kernel per detectar canvis als veïns (3x3 excloent el centre), nos permite detectar lo bordes. Lo multiplicas con matriz 3x3 desde que se detecta
+# un agua, sabiendo que agua = 1 y no agua = 0.Esta matriz se va deslizando por la imagene hasta detectar toda la linea de costa. cada número 
+#representa un pixel, y los de alrededor son sus píxeles vecinos.
+kernel = np.array([[1, 1, 1],
+                   [1, 0, 1],
+                   [1, 1, 1]])
+
+#Ahora para calcular el kernel utilizas solo cuatro vecinos, por lo que será menos preciso, al considerar menos píxeles.
+kernel_4 = np.array([[0, 1, 0],
+                     [1, 0, 1],
+                     [0, 1, 0]])
+
+# Lista para guardar todas las coordenadas de todas las fechas
+all_coordinates = []
+
+# Recorre totes les carpetes d’imatges
+for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dirs = lista de subcarpetas; files = lista de archivos en la carpeta
+    if "waterbody.tif" in files:    #verifica que exista la carpeta
+        waterbody_path = os.path.join(root, "waterbody.tif")    #construye la ruta al archivo
+        print(f"Processant {waterbody_path}...")    
+
+        #breakpoint()
+        # Obre i llegeix el GeoTIFF
+        with rasterio.open(waterbody_path) as src:  #abre el archivo en modo lectura
+            out_image, out_transform = mask(src, polygon_geom, crop=True) #sirve para recortar la imagen
+            waterbody = src.read(1) #coge la primera banda que tenga agua sabiendo que agua = 1; no agua = 0. 
+            profile = src.profile
+            transform = src.transform  # Guardamos la transformación para coordenadas, cambia píxeles a coordenadas reales
+
+            profile.update({
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform
+            }) #sirve para actualizar los metadatos de las imagenes para poder recortarlo y así determinar un AOI más pequeño
+
+
+
+        # CORNER CASE 1: Excluir bordes del AOI (3 píxeles de cada lado), es decir de la parte de AOI elimina tres pixeles para que no
+        #los confunda con tierra, simplemente no existen
+        height, width = waterbody.shape
+        border_mask = np.ones_like(waterbody, dtype=bool)
+        border_mask[:3, :] = False        # Borde superior
+        border_mask[-3:, :] = False       # Borde inferior  
+        border_mask[:, :3] = False        # Borde izquierdo
+        border_mask[:, -3:] = False       # Borde derecho
+        
+         # CORNER CASE 2: Detectar áreas nubladas (patrones irregulares)
+        
+        matriz_zonas_agua, num_water_components = ndimage.label(waterbody == 1) #Encuentra zonas de agua, asigna un número único a cada zona de agua
+        water_component_sizes = np.bincount(matriz_zonas_agua.ravel()) #.ravel transforma la matriz en vector, 
+                                                                        #bincount cuanta el numero de pixeles en cada zona(posicion 0 del vector son todos los pixeles de tierra)
+        
+        cloud_mask = np.ones_like(waterbody, dtype=bool) 
+                                                       
+        
+        small_components = 0
+        for label in range(1, num_water_components + 1): #recorre todas las zonas de agua, empezando en la 1, ya que la 0 es tierra
+            if water_component_sizes[label] < 50:
+                small_components += 1
+                cloud_mask[matriz_zonas_agua == label] = False #Marca como probable nube todos los píxeles de esa mancha pequeña y los ignora
+        
+        cloud_ratio = small_components / max(1, num_water_components) #mira la proporcion de cuantas zonas son nubes en total
+        if cloud_ratio > 0.3:
+            print(f" Imagen posiblemente nublada ({cloud_ratio:.1%} componentes pequeños)")
+        
+        # Detecta línia de costa
+        neighbor_sum = convolve(waterbody, kernel, mode='constant', cval=0) #Lo multiplica por el kernel y si los vecinos que son agua son <8 
+                                                                            #es una línea de costa, sino es mar.
+        coastline = np.logical_and(waterbody == 1, neighbor_sum < 8).astype(np.uint8) #np.logical_and: combina ambas condiciones → píxeles de agua con al menos un vecino de tierra.
+                                                                                    #.astype(np.uint8): convierte el resultado booleano a 0s y 1s,es decir, es o no es costa.
+
+        # Método 4-vecinos 
+        neighbor_sum_4 = convolve(waterbody, kernel_4, mode='constant', cval=0)
+        coastline_4 = np.logical_and(waterbody == 1, neighbor_sum_4 < 4).astype(np.uint8)
+        
+        # Comparar resultados entre los kernel
+        pixels_8 = np.sum(coastline)
+        pixels_4 = np.sum(coastline_4)
+        
+        print(f"   Comparación métodos:")
+        print(f"     - 8-vecinos: {pixels_8} píxeles de costa")
+        print(f"     - 4-vecinos: {pixels_4} píxeles de costa")
+        print(f"     - Diferencia: {abs(pixels_8 - pixels_4)} píxeles")
+        
+        
+        coastline = np.logical_and(coastline, border_mask).astype(np.uint8) #aplicar la eliminacion de los bordes AOI
+        coastline = np.logical_and(coastline, cloud_mask).astype(np.uint8)  #aplicar lo de las nubes
+        
+        # Actualitza perfil per guardar
+        profile.update(dtype=rasterio.uint8, count=1) #actualiza la forma de guardar los datos, por un lado count = 1 crea una sola banda(la de costa)
+                                                        #por otro lado, dtype=rasterio.uint8 lo hace solo para ocupar menos espacio, ya que usamos 1 y 0 no floats
+
+        # Ruta de sortida
+        coastline_path = os.path.join(root, "coastline.tif") #ruta de salida para el archivo "coastline.tif" en la misma carpeta.
+
+        # Guarda resultados en un nuevo archivo
+        with rasterio.open(coastline_path, 'w', **profile) as dst: 
+            dst.write(coastline, 1)     #crea un nuevo archivo y escribe la coastline
+
+        print(f"  → Línia de costa guardada a {coastline_path}")
+        
+        # 🆕 EXPORTAR A GEOJSON
+        print("  → Exportant coordenades a GeoJSON...")
+        
+        # Troba els píxels que són costa (valors = 1)
+        y_indices, x_indices = np.where(coastline == 1) #np.where busca todos las coordenadas de los píxeles coastline
+        
+        # Convierte los pixeles a coordenadas XY UTM Z31
+        coordinates = []
+        for x_pixel, y_pixel in zip(x_indices, y_indices):
+            # Transforma coordenades de píxel a coordenadas UTM
+            x_coord, y_coord = transform * (x_pixel, y_pixel)
+            coordinates.append((x_coord, y_coord))
+        
+        # =====  VALIDACIÓN CON GROUND TRUTH =====
+        folder_name = os.path.basename(root)
+        current_date = folder_name
+        
+        print(f"  → Validando con ground truth para: {current_date}")
+        
+        # Buscar ground truth correspondiente
+        matched_gt_date = None
+        for gt_date in ground_truth_dates.keys():
+            if gt_date[:7] == current_date[:7]:  # Comparar YYYY-MM
+                matched_gt_date = gt_date
+                break
+        
+        if matched_gt_date and os.path.exists(ground_truth_dates[matched_gt_date]):
+            gt_coords = load_ground_truth(ground_truth_dates[matched_gt_date])
+            
+            if gt_coords:
+                matched_est, matched_gt = find_nearest_matches(coordinates, gt_coords)
+                
+                if matched_est and matched_gt:
+                    rmse = calculate_rmse(matched_est, matched_gt)
+                    
+                    validation_results.append({
+                        'image_date': current_date,
+                        'gt_date': matched_gt_date,
+                        'rmse': rmse,
+                        'matched_points': len(matched_est),
+                        'total_gt_points': len(gt_coords)
+                    })
+                    
+                    print(f"  ✅ RMSE: {rmse:.2f} metros")
+                    if rmse < 50:
+                        print(f"  🎯 OBJETIVO CUMPLIDO: RMSE < 50m")
+                    else:
+                        print(f"  ⚠️  OBJETIVO NO CUMPLIDO: RMSE > 50m")
+        
+        # 🆕 GUARDAR PARA CSV GLOBAL
+        # Extraer fecha del nombre de carpeta o usar fecha actual
+        folder_name = os.path.basename(root)
+        
+        # Intentar extraer fecha del nombre de carpeta
+        try:
+            # Si la carpeta tiene formato de fecha: "2024-01-15"
+            date_str = folder_name
+        except:
+            # Si no, usar fecha de procesamiento
+            date_str = datetime.now().strftime("%Y-%m-%d")
+        
+        # Añadir todas las coordenadas con su fecha a la lista global
+        for x_coord, y_coord in coordinates:
+            all_coordinates.append({
+                'X': x_coord,
+                'Y': y_coord, 
+                'Date': date_str
+            })     
+        
+        # Crea geometries Point per a cada coordenada de costa
+        geometries = [Point(x_coord, y_coord) for x_coord, y_coord in coordinates] #geometries = todos los ptos de costa que encontramos
+        
+        # Crea GeoDataFrame
+        gdf = gpd.GeoDataFrame({
+            #'id': range(len(geometries)),  # ID únic per a cada punt, sirve para darle un numero a cada pto
+            'x': [coord[0] for coord in coordinates],  # Coordenada X
+            'y': [coord[1] for coord in coordinates]   # Coordenada Y
+        }, geometry=geometries, crs="EPSG:32631")  # directamente pone las coordenadas en UTM
+
+        # Ruta per al fitxer GeoJSON
+        geojson_path = os.path.join(root, "coastline_utm.geojson") #donde lo guardas y crea la ruta
+        
+        # Guarda com a GeoJSON
+        gdf.to_file(geojson_path, driver='GeoJSON') #para guardarlo como un GEOJ
+        
+        print(f"  → GeoJSON guardat a {geojson_path}")
+        print(f"  → S'han exportat {len(coordinates)} punts de costa")
+
+print("\n Processament complet.")
+
+
+# =====  REPORTE FINAL RMSE =====
+print("\n" + "="*60)
+print("REPORTE FINAL DE VALIDACIÓN RMSE")
+print("="*60)
+
+if validation_results:
+    df_validation = pd.DataFrame(validation_results)
+    validation_csv_path = os.path.join(base_folder, "validation_results.csv")
+    df_validation.to_csv(validation_csv_path, index=False)
+    
+    print(f"Resultados guardados en: {validation_csv_path}")
+    print("\nResumen por fecha:")
+    
+    dates_with_success = 0
+    for result in validation_results:
+        status = "✅ CUMPLE" if result['rmse'] < 50 else "❌ NO CUMPLE"
+        print(f"  {result['gt_date']}: RMSE = {result['rmse']:.2f}m - {status}")
+        if result['rmse'] < 50:
+            dates_with_success += 1
+    
+    print(f"\nTotal fechas validadas: {len(validation_results)}")
+    print(f"Fechas con RMSE < 50m: {dates_with_success}")
+    
+    if dates_with_success >= 3:
+        print("🎉 ¡OBJETIVO PRINCIPAL ALCANZADO! RMSE < 50m para al menos 3 fechas")
+    else:
+        print(f"⚠️  Objetivo no alcanzado. Se necesitan {3 - dates_with_success} fechas más")
+else:
+    print("❌ No se realizaron validaciones con ground truth")
+    print("   Posibles causas:")
+    print("   - No hay archivos de ground truth en las rutas especificadas")
+    print("   - Las fechas de las imágenes no coinciden con las del ground truth")
+    print("   - No se pudieron cargar los archivos GT")
+
+#  GENERAR CSV GLOBAL CON TODAS LAS FECHAS
+if all_coordinates:
+    # Crear DataFrame con todas las coordenadas
+    df_global = pd.DataFrame(all_coordinates)
+    
+    # Guardar CSV
+    csv_path = os.path.join(base_folder, "coastline_coordinates_all_dates.csv")
+    df_global.to_csv(csv_path, index=False)
+    
+    print(f"\n CSV GLOBAL GENERADO:")
+    print(f"   → Archivo: {csv_path}")
+    print(f"   → Total puntos: {len(df_global)}")
+    print(f"   → Fechas únicas: {df_global['Date'].nunique()}")
+    print(f"   → Columnas: {list(df_global.columns)}")
+    
+    # Mostrar primeras filas como ejemplo
+    print(f"\n Primeras filas del CSV:")
+    print(df_global.head())
+else:
+    print("⚠️ No se encontraron coordenadas para generar el CSV")
