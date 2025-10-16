@@ -1,0 +1,86 @@
+import os
+import rasterio
+import numpy as np
+from rasterio.mask import mask
+import geopandas as gpd
+import pandas as pd
+from shapely.geometry import Point
+
+# -------------------------------
+# PARÀMETRES
+# -------------------------------
+base_folder = "C:/Users/ninac/Desktop/Visual Studio 2/sentinel2_ndwi_images"
+polygon_geojson_path = "C:/Users/ninac/Desktop/Visual Studio 2/sentinel2_ndwi_images/polygon.geojson"
+
+# Carregar GeoJSON i preparar geometria
+gdf_polygon = gpd.read_file(polygon_geojson_path)
+
+# -------------------------------
+# Llista per guardar totes les coordenades
+# -------------------------------
+all_coordinates = []
+
+# -------------------------------
+# Funció per extreure coordenades d'un raster
+# -------------------------------
+def extract_coordinates(raster_path, geom_type):
+    with rasterio.open(raster_path) as src:
+        # Reprojectar polygon si cal
+        if gdf_polygon.crs != src.crs:
+            gdf_proj = gdf_polygon.to_crs(src.crs)
+        else:
+            gdf_proj = gdf_polygon
+
+        polygon_geom = [gdf_proj.geometry.iloc[0]]
+
+        # Retallar raster al AOI
+        out_image, out_transform = mask(src, polygon_geom, crop=True)
+        data = out_image[0]
+
+    y_idx, x_idx = np.where(data == 1)
+    coords = []
+    for x_pix, y_pix in zip(x_idx, y_idx):
+        x_coord, y_coord = out_transform * (x_pix, y_pix)
+        coords.append({"X": x_coord, "Y": y_coord, "Date": os.path.basename(os.path.dirname(raster_path)), "Type": geom_type})
+    return coords
+
+# -------------------------------
+# Recorre les carpetes
+# -------------------------------
+for root, dirs, files in os.walk(base_folder):
+    # Waterbody
+    if "waterbody.tif" in files:
+        waterbody_path = os.path.join(root, "waterbody.tif")
+        print(f"Processant {waterbody_path}...")
+        coords = extract_coordinates(waterbody_path, "waterbody")
+        all_coordinates.extend(coords)
+
+    # Coastline
+    if "coastline.tif" in files:
+        coastline_path = os.path.join(root, "coastline.tif")
+        print(f"Processant {coastline_path}...")
+        coords = extract_coordinates(coastline_path, "coastline")
+        all_coordinates.extend(coords)
+
+# -------------------------------
+# Generar CSV global
+# -------------------------------
+if all_coordinates:
+    df_global = pd.DataFrame(all_coordinates)
+    csv_path = os.path.join(base_folder, "waterbody_coastline_coordinates_all_dates.csv")
+    df_global.to_csv(csv_path, index=False)
+    print(f"\n📄 CSV GLOBAL GENERADO: {csv_path}, total puntos: {len(df_global)}")
+
+    # -------------------------------
+    # Crear GeoJSON per Google Earth
+    # -------------------------------
+    geometry = [Point(xy) for xy in zip(df_global["X"], df_global["Y"])]
+    gdf = gpd.GeoDataFrame(df_global, geometry=geometry, crs="EPSG:32631")  # UTM Z31
+    gdf_wgs84 = gdf.to_crs(epsg=4326)  # Convertir a WGS84 per Google Earth
+
+    geojson_path = os.path.join(base_folder, "waterbody_coastline_all_dates.geojson")
+    gdf_wgs84.to_file(geojson_path, driver="GeoJSON")
+    print(f"🌍 GeoJSON generat per Google Earth: {geojson_path}")
+
+else:
+    print("⚠️ No se encontraron coordenadas para generar el CSV ni GeoJSON")
