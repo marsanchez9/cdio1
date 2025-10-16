@@ -1,0 +1,51 @@
+import pandas as pd
+import numpy as np
+from datetime import datetime
+
+# Cargar CSV global
+csv_path = "./sentinel2_images4/coastline_coordinates_all_dates.csv" # Carga todas las fechas del archivo
+df = pd.read_csv(csv_path)
+
+# Convierte la columna Date a datetime para que pandas pueda leer la fecha correctamente y filtrar por meses
+df["Date"] = pd.to_datetime(df["Date"], errors='coerce')
+
+# Filtrar solo primera mitad del año (enero–junio)
+df_first_half = df[df["Date"].dt.month <= 6]
+
+# Ordenar por fecha
+df_first_half = df_first_half.sort_values("Date")
+
+# Agrupar por fecha
+groups = [g for _, g in df_first_half.groupby("Date")]
+
+erosion_values = []
+
+for i in range(len(groups) - 1):
+    g1 = groups[i]
+    g2 = groups[i+1]
+    
+    # Emparejar los puntos más cercanos entre las dos fechas (simplificación)
+    min_len = min(len(g1), len(g2))
+    g1 = g1.iloc[:min_len]
+    g2 = g2.iloc[:min_len]
+    
+    # Distancia euclidiana entre líneas de costa
+    distances = np.sqrt((g2["X"].values - g1["X"].values)**2 +
+                        (g2["Y"].values - g1["Y"].values)**2)
+    
+    avg_erosion = np.mean(distances)
+    date_pair = (g1["Date"].iloc[0].strftime("%Y-%m-%d"),
+                 g2["Date"].iloc[0].strftime("%Y-%m-%d"))
+    
+    erosion_values.append({
+        "From": date_pair[0],
+        "To": date_pair[1],
+        "Mean_Shoreline_Change_m": avg_erosion
+    })
+
+erosion_df = pd.DataFrame(erosion_values)
+print("\n📊 Resultados de erosión entre fechas consecutivas (primera mitad del año):")
+print(erosion_df)
+
+geojson_path = "./sentinel2_images4/coastline_first_half.geojson"
+gdf_first_half.to_file(geojson_path, driver="GeoJSON")
