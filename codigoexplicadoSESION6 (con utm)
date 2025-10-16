@@ -125,12 +125,12 @@ for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dir
         # Troba els píxels que són costa (valors = 1)
         y_indices, x_indices = np.where(coastline == 1) #np.where busca todos las coordenadas de los píxeles coastline
         
-        # Converteix píxels a coordenades reals (lat, lon)
+        # Convierte los pixeles a coordenadas XY UTM Z31
         coordinates = []
         for x_pixel, y_pixel in zip(x_indices, y_indices):
-            # Transforma coordenades de píxel a coordenades mundials (longitud y latitud)
-            lon, lat = transform * (x_pixel, y_pixel)
-            coordinates.append((lon, lat))
+            # Transforma coordenadass de píxel a coordenadas UTM
+            x_coord, y_coord = transform * (x_pixel, y_pixel)
+            coordinates.append((x_coord, y_coord))
         
         
         # 🆕 GUARDAR PARA CSV GLOBAL
@@ -145,31 +145,26 @@ for root, dirs, files in os.walk(base_folder):   #root = ruta de la carpeta; dir
             # Si no, usar fecha de procesamiento
             date_str = datetime.now().strftime("%Y-%m-%d")
         
-        # Añadir todas las coordenadas con su fecha a la lista global
-        for lon, lat in coordinates:
-            all_coordinates.append({
-                'X': lon,
-                'Y': lat, 
-                'Date': date_str
-            })     
-        
-        # Crea geometries Point per a cada coordenada de costa
-        geometries = [Point(lon, lat) for lon, lat in coordinates] #geometries = todos los ptos de costa que encontramos
         
         # Crea GeoDataFrame
         gdf = gpd.GeoDataFrame({
             #'id': range(len(geometries)),  # ID únic per a cada punt, sirve para darle un numero a cada pto
-            'x': [coord[0] for coord in coordinates],  # Longitud
-            'y': [coord[1] for coord in coordinates]   # Latitud
-        }, geometry=geometries, crs="EPSG:4326")  # lo aplica al sistema de coordenadas de google maps
-        
+            'x': [coord[0] for coord in coordinates],  # Coordenada X
+            'y': [coord[1] for coord in coordinates]   # Coordenada Y
+        }, geometry=geometries, crs="EPSG:32631")  # directamente pone las coordenadas en UTM
+
+        # Cambiar las coordenadas de longitud y latitud a XY UTM N31 (esto es por si las coordenadas están en long/lat)
+        #gdf_utm = gdf.to_crs("EPSG:32631")
+        #gdf_utm["X_UTM"] = gdf_utm.geometry.x
+        #gdf_utm["Y_UTM"] = gdf_utm.geometry.y
+
         # Ruta per al fitxer GeoJSON
-        geojson_path = os.path.join(root, "coastline.geojson") #donde lo guardas y crea la ruta
+        geojson_path_utm = os.path.join(root, "coastline_utm.geojson") #donde lo guardas y crea la ruta
         
         # Guarda com a GeoJSON
-        gdf.to_file(geojson_path, driver='GeoJSON') #para guardarlo como un GEOJ
+        gdf_utm.to_file(geojson_path_utm, driver='GeoJSON') #para guardarlo como un GEOJ
         
-        print(f"  → GeoJSON guardat a {geojson_path}")
+        print(f"  → GeoJSON guardat a {geojson_path_utm}")
         print(f"  → S'han exportat {len(coordinates)} punts de costa")
 
 print("\n✔️ Processament complet.")
@@ -177,9 +172,11 @@ print("\n✔️ Processament complet.")
 
 # 🆕 GENERAR CSV GLOBAL CON TODAS LAS FECHAS
 if all_coordinates:
+
     # Crear DataFrame con todas las coordenadas
     df_global = pd.DataFrame(all_coordinates)
-    
+
+   
     # Guardar CSV
     csv_path = os.path.join(base_folder, "coastline_coordinates_all_dates.csv")
     df_global.to_csv(csv_path, index=False)
