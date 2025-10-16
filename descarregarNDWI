@@ -6,13 +6,17 @@ from rasterio.io import MemoryFile
 import matplotlib.pyplot as plt
 import time
 
+# ==============================
+# PARÀMETRES DEL PROJECTE
+# ==============================
 aoi_url = "https://raw.githubusercontent.com/thoyo-upc/bdse-cdio1/main/coastline_estimator/projects/castelldefels_h1_2025/input/polygon.geojson"
 stac_url = "https://earth-search.aws.element84.com/v1"
 collection = "sentinel-2-l2a"
 date_range = ["2025-01-01", "2025-07-01"]
 
-
-# DESCÀRREGA 
+# ==============================
+# DESCÀRREGA I CERCA STAC
+# ==============================
 print("Baixant AOI...")
 aoi_geojson = requests.get(aoi_url).json()
 
@@ -20,7 +24,7 @@ payload = {
     "collections": [collection],
     "intersects": aoi_geojson["features"][0]["geometry"],
     "datetime": f"{date_range[0]}T00:00:00Z/{date_range[1]}T00:00:00Z",
-    "limit": 10,
+    "limit": 20, #limit d'imatges per a optimitzar el temps de descàrrega
 }
 
 print("Consultant STAC API...")
@@ -32,9 +36,7 @@ save_folder = "./sentinel2_ndwi_images"
 os.makedirs(save_folder, exist_ok=True)
 print(f"Les imatges NDWI es guardaran a: {os.path.abspath(save_folder)}")
 
-# ==============================
-# FUNCIONS AUXILIARS
-# ==============================
+
 def download_tiff_as_array(url):
     """Descarrega un TIFF i retorna el contingut com a array numpy."""
     start_t = time.time()
@@ -47,9 +49,8 @@ def download_tiff_as_array(url):
             array = dataset.read(1).astype(np.float32)
     return array, size_bytes, duration
 
-# ==============================
+
 # DESCÀRREGA I CÀLCUL NDWI
-# ==============================
 total_saved = 0
 total_size = 0  # bytes
 total_time_download = 0.0
@@ -58,9 +59,16 @@ start_all = time.time()
 
 for item in data["features"]:
     item_id = item["id"]
-    assets = item.get("assets", {})
+    properties = item.get("properties", {})
+    cloud_cover = properties.get("eo:cloud_cover", None)
 
-    print(f"\nProcessem item: {item_id}")
+    # 🔹 Filtre per nuvolositat
+    if cloud_cover is not None and cloud_cover > 10:
+        print(f"\n⛅ Saltant {item_id}: massa núvols ({cloud_cover:.1f}%)")
+        continue
+
+    assets = item.get("assets", {})
+    print(f"\nProcessem item: {item_id} (nuvolositat={cloud_cover}%)")
 
     # Només necessitem bandes green i nir
     green_asset = assets.get("green")
@@ -99,17 +107,19 @@ for item in data["features"]:
 
 
 # ESTADÍSTIQUES GLOBALS
+
 end_all = time.time()
 total_time = end_all - start_all
 total_size_mb = total_size / (1024 ** 2)
 bandwidth = total_size_mb / total_time if total_time > 0 else 0
 
 # Extrapolació per N mesos
-N = 6  
+N = 6  # pots canviar-ho
 estimated_time_N_months = total_time * N
 
 
 # RESULTATS
+
 print("\n===== RESULTATS GLOBALS =====")
 print(f"Total imatges NDWI processades: {total_saved}")
 print(f"Mida total descarregada: {total_size_mb:.2f} MB")
