@@ -1,0 +1,56 @@
+import os
+import numpy as np
+import rasterio
+from scipy.ndimage import convolve
+
+def load_ndwi(ndwi_path):
+    """Carrega NDWI des d'un GeoTIFF."""
+    with rasterio.open(ndwi_path) as src:
+        arr = src.read(1).astype(np.float32)
+        profile = src.profile
+    return arr, profile
+
+def detect_waterbody(ndwi):
+    """Retorna una màscara 1=aigua, 0=terra."""
+    return (ndwi > 0).astype(np.uint8)
+
+def detect_coastline(waterbody):
+    """Detecta píxels de costa on aigua té veí de terra."""
+    kernel = np.array([[1, 1, 1],
+                       [1, 0, 1],
+                       [1, 1, 1]])
+    neighbor_sum = convolve(waterbody, kernel, mode='constant', cval=0)
+    coastline = np.logical_and(waterbody, neighbor_sum < 8).astype(np.uint8)
+    return coastline
+
+def save_geotiff(data, profile, path):
+    profile = profile.copy()
+    profile.update(dtype=rasterio.uint8, count=1, compress='lzw')
+    with rasterio.open(path, 'w', **profile) as dst:
+        dst.write(data, 1)
+    print(f"Guardat a: {path}")
+
+def process_folder(folder):
+    ndwi_path = os.path.join(folder, "ndwi.tif")  # Nom del NDWI ja guardat
+    if not os.path.isfile(ndwi_path):
+        print(f"No s'ha trobat NDWI a {folder}, saltant...")
+        return
+
+    ndwi, profile = load_ndwi(ndwi_path)
+
+    # Detectar waterbody
+    waterbody = detect_waterbody(ndwi)
+    save_geotiff(waterbody, profile, os.path.join(folder, "waterbody.tif"))
+
+    # Detectar coastline
+    coastline = detect_coastline(waterbody)
+    save_geotiff(coastline, profile, os.path.join(folder, "coastline.tif"))
+
+if __name__ == "__main__":
+    base_folder = "./sentinel2_ndwi_images"  # Carpeta on tens els NDWI ja guardats
+    for item in os.listdir(base_folder):
+        item_folder = os.path.join(base_folder, item)
+        if os.path.isdir(item_folder):
+            print(f"Processant {item_folder}...")
+            process_folder(item_folder)
+
