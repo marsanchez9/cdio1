@@ -1,0 +1,209 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import mean_squared_error, r2_score
+
+print("=== ANÁLISIS COMPLETO: RADIACIÓN SOLAR Y TEMPERATURA EN BARCELONA ===")
+print("=" * 70)
+
+# =============================================================================
+# CARGA Y EXPLORACIÓN DE DATOS
+# =============================================================================
+print("\n📊 CARGANDO DATOS...")
+
+# NOTA: Cambia por el nombre EXACTO de tu archivo CSV
+df = pd.read_csv('valores1.csv', skiprows=11)
+
+# Crear día del año para Parte 3
+df['day_of_year'] = range(1, len(df) + 1)
+
+print("Primeras filas del dataset:")
+print(df[['ALLSKY_SFC_SW_DWN', 'T2M', 'RH2M', 'day_of_year']].head())
+
+# =============================================================================
+# PARTE 1: REGRESIÓN LINEAL SIMPLE
+# =============================================================================
+print("\n" + "="*50)
+print("PARTE 1: REGRESIÓN LINEAL SIMPLE")
+print("Radiación Solar vs Temperatura")
+print("="*50)
+
+# Preparar datos
+X_simple = df[['ALLSKY_SFC_SW_DWN']]
+y = df['T2M']
+
+# Entrenar modelo simple
+model_simple = LinearRegression()
+model_simple.fit(X_simple, y)
+y_pred_simple = model_simple.predict(X_simple)
+
+# Resultados
+r2_simple = model_simple.score(X_simple, y)
+rmse_simple = np.sqrt(mean_squared_error(y, y_pred_simple))
+
+print(f"Intercepto (b₀): {model_simple.intercept_:.2f}°C")
+print(f"Pendiente (b₁): {model_simple.coef_[0]:.4f}°C por kWh/m²/día")
+print(f"R²: {r2_simple:.4f} ({r2_simple*100:.1f}% de variación explicada)")
+print(f"RMSE: {rmse_simple:.2f}°C")
+
+# =============================================================================
+# PARTE 2: REGRESIÓN LINEAL MÚLTIPLE
+# =============================================================================
+print("\n" + "="*50)
+print("PARTE 2: REGRESIÓN LINEAL MÚLTIPLE") 
+print("Radiación Solar + Humedad vs Temperatura")
+print("="*50)
+
+# Preparar datos múltiples
+X_multi = df[['ALLSKY_SFC_SW_DWN', 'RH2M']]
+
+# Entrenar modelo múltiple
+model_multi = LinearRegression()
+model_multi.fit(X_multi, y)
+y_pred_multi = model_multi.predict(X_multi)
+
+# Resultados
+r2_multi = model_multi.score(X_multi, y)
+rmse_multi = np.sqrt(mean_squared_error(y, y_pred_multi))
+
+print(f"Intercepto (b₀): {model_multi.intercept_:.2f}°C")
+print(f"Coeficientes (b₁, b₂): [{model_multi.coef_[0]:.4f}, {model_multi.coef_[1]:.4f}]")
+print(f"R²: {r2_multi:.4f} ({r2_multi*100:.1f}% de variación explicada)")
+print(f"RMSE: {rmse_multi:.2f}°C")
+
+# Comparación
+print(f"\nComparación con modelo simple:")
+print(f"Mejora en R²: {r2_multi - r2_simple:.4f}")
+
+# =============================================================================
+# PARTE 3: REGRESIÓN POLINÓMICA
+# =============================================================================
+print("\n" + "="*50)
+print("PARTE 3: REGRESIÓN POLINÓMICA")
+print("Estacionalidad de la Temperatura")
+print("="*50)
+
+# Probar diferentes grados
+X_poly = df[['day_of_year']]
+resultados_poly = []
+
+for grado in [1, 2, 4]:
+    poly = PolynomialFeatures(degree=grado)
+    X_poly_trans = poly.fit_transform(X_poly)
+    
+    model_poly = LinearRegression()
+    model_poly.fit(X_poly_trans, y)
+    y_pred_poly = model_poly.predict(X_poly_trans)
+    
+    r2 = r2_score(y, y_pred_poly)
+    rmse = np.sqrt(mean_squared_error(y, y_pred_poly))
+    
+    resultados_poly.append({
+        'grado': grado, 
+        'model': model_poly, 
+        'poly': poly,
+        'y_pred': y_pred_poly,
+        'r2': r2,
+        'rmse': rmse
+    })
+    
+    print(f"Grado {grado}: R² = {r2:.4f}, RMSE = {rmse:.2f}°C")
+
+mejor_poly = max(resultados_poly, key=lambda x: x['r2'])
+print(f"\n✅ MEJOR MODELO POLINÓMICO: Grado {mejor_poly['grado']}")
+
+# =============================================================================
+# GRÁFICAS COMBINADAS
+# =============================================================================
+print("\n" + "="*50)
+print("GENERANDO GRÁFICAS COMBINADAS...")
+print("="*50)
+
+# Crear figura con 4 subgráficas
+fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+
+# ===========================================
+# Gráfica 1: Regresión Simple (Arriba Izquierda)
+# ===========================================
+axes[0,0].scatter(X_simple, y, alpha=0.6, color='blue', s=30, label='Datos observados')
+axes[0,0].plot(X_simple, y_pred_simple, color='red', linewidth=2, label='Recta de regresión')
+axes[0,0].set_xlabel('Radiación Solar (kWh/m²/día)')
+axes[0,0].set_ylabel('Temperatura (°C)')
+axes[0,0].set_title(f'PARTE 1: Regresión Lineal Simple\nR² = {r2_simple:.3f}, RMSE = {rmse_simple:.2f}°C')
+axes[0,0].legend()
+axes[0,0].grid(True, alpha=0.3)
+
+# ===========================================
+# Gráfica 2: Comparación Múltiple (Arriba Derecha)
+# ===========================================
+# Scatter de radiación vs temperatura
+scatter = axes[0,1].scatter(df['ALLSKY_SFC_SW_DWN'], df['T2M'], c=df['RH2M'], 
+                           cmap='viridis', alpha=0.7, s=30)
+axes[0,1].set_xlabel('Radiación Solar (kWh/m²/día)')
+axes[0,1].set_ylabel('Temperatura (°C)')
+axes[0,1].set_title(f'PARTE 2: Regresión Múltiple\nR² = {r2_multi:.3f}, RMSE = {rmse_multi:.2f}°C')
+plt.colorbar(scatter, ax=axes[0,1], label='Humedad Relativa (%)')
+axes[0,1].grid(True, alpha=0.3)
+
+# ===========================================
+# Gráfica 3: Regresión Polinómica (Abajo Izquierda)
+# ===========================================
+colors_poly = ['red', 'blue', 'green']
+for i, resultado in enumerate(resultados_poly):
+    axes[1,0].plot(X_poly, resultado['y_pred'], 
+                   color=colors_poly[i], 
+                   linewidth=2, 
+                   label=f'Grado {resultado["grado"]} (R² = {resultado["r2"]:.3f})')
+
+axes[1,0].scatter(X_poly, y, alpha=0.3, color='black', s=10, label='Datos observados')
+axes[1,0].set_xlabel('Día del Año')
+axes[1,0].set_ylabel('Temperatura (°C)')
+axes[1,0].set_title('PARTE 3: Regresión Polinómica\nEstacionalidad de la Temperatura')
+axes[1,0].legend()
+axes[1,0].grid(True, alpha=0.3)
+
+# ===========================================
+# Gráfica 4: Heatmap de Correlaciones (Abajo Derecha)
+# ===========================================
+correlation_matrix = df[['ALLSKY_SFC_SW_DWN', 'T2M', 'RH2M']].corr()
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0,
+            vmin=-1, vmax=1, square=True, ax=axes[1,1])
+axes[1,1].set_title('Matriz de Correlación')
+
+# Ajustar layout y guardar
+plt.tight_layout()
+plt.savefig('analisis_completo_barcelona.png', dpi=300, bbox_inches='tight')
+print("✅ Gráfica completa guardada como 'analisis_completo_barcelona.png'")
+
+# =============================================================================
+# RESUMEN FINAL
+# =============================================================================
+print("\n" + "="*70)
+print("📈 RESUMEN FINAL DEL ANÁLISIS")
+print("="*70)
+
+print(f"\nPARTE 1 - Regresión Simple:")
+print(f"  • Cada kWh/m²/día de radiación aumenta la temperatura en {model_simple.coef_[0]:.4f}°C")
+print(f"  • El {r2_simple*100:.1f}% de la variación en temperatura se explica por la radiación solar")
+
+print(f"\nPARTE 2 - Regresión Múltiple:")
+print(f"  • Radiación: {model_multi.coef_[0]:.4f}°C por kWh/m²/día")
+print(f"  • Humedad: {model_multi.coef_[1]:.4f}°C por % de humedad")
+print(f"  • Mejora al añadir humedad: {r2_multi - r2_simple:.4f} en R²")
+
+print(f"\nPARTE 3 - Regresión Polinómica:")
+print(f"  • Mejor modelo: Grado {mejor_poly['grado']} (R² = {mejor_poly['r2']:.4f})")
+print(f"  • Captura la estacionalidad anual de la temperatura")
+
+print(f"\nCORRELACIONES:")
+print(f"  • Radiación-Temperatura: {correlation_matrix.loc['ALLSKY_SFC_SW_DWN', 'T2M']:.3f}")
+print(f"  • Radiación-Humedad: {correlation_matrix.loc['ALLSKY_SFC_SW_DWN', 'RH2M']:.3f}")
+print(f"  • Temperatura-Humedad: {correlation_matrix.loc['T2M', 'RH2M']:.3f}")
+
+print("\n" + "="*70)
+print("✅ ANÁLISIS COMPLETADO")
+print("📊 Gráfica guardada: 'analisis_completo_barcelona.png'")
+print("="*70)
