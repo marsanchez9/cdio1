@@ -1,0 +1,49 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+file = "CDIO/shoreline_distances_castefa_gava_prat_2017_2024.csv"
+df = pd.read_csv(file)
+print(df.head())
+print(df.info())
+
+df['date'] = pd.to_datetime(df['date'])
+pivot_df = df.pivot(index='date', columns='transect_id', values='distance_m')
+
+print(df.describe())
+
+NaNs = df['distance_m'].isnull().sum() 
+Percentage_NaNs = NaNs / len(df) * 100
+print(f"Number of NaNs: {NaNs}, Percentage of NaNs: {Percentage_NaNs:.2f}%")
+
+col_nan_pct = pivot_df.isna().mean() * 100
+
+
+print("NaN percentage per transect (sorted ascending):")
+print(col_nan_pct.sort_values())
+
+col_nan_pct_sorted = col_nan_pct.sort_values(ascending=False)
+fig, ax = plt.subplots(figsize=(12, 6))
+col_nan_pct_sorted.plot(kind='bar', ax=ax, color='C0', alpha=0.8)
+ax.set_ylabel('Percentage of NaNs (%)')
+ax.set_title('NaN percentage per transect (ascending)')
+ax.set_xlabel('transect_id')
+ax.set_ylim(0, 100)  # percentage range
+ax.set_xticklabels([])
+plt.tight_layout()
+plt.savefig("CDIO/nans_pct_per_transect.png", dpi=150)
+plt.show()
+
+good_cols = col_nan_pct[col_nan_pct < 20].index
+filtered_df = pivot_df[good_cols]
+
+df.plot(x='date', y='distance_m', kind='scatter', alpha=0.1)    
+
+mean_series = filtered_df.mean(axis=1)
+
+monthly_df = filtered_df.resample('MS').mean()
+monthly_df = monthly_df.interpolate(method='linear')
+print(monthly_df.head())
+print(monthly_df.info())
+
+
+monthly_df.to_csv("CDIO/shoreline_monthly_interpolated.csv", index=True)
