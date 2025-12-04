@@ -1,0 +1,38 @@
+import geopandas as gpd
+import rasterio
+import json
+from rasterio.mask import mask
+
+# Paths
+raster_path = "/home/cbltic/bdse-cdio1/sentinel2_india/S2A_31TDF_20251129_0_L2A/RGB.tif"
+gjson_path = "/home/cbltic/bdse-cdio1/map(1).geojson"
+out_path = "/home/cbltic/bdse-cdio1/RGB_retallat.tif"
+
+# Llegeix el raster i la seva projecció
+with rasterio.open(raster_path) as src:
+    raster_crs = src.crs
+
+# Llegeix el geojson i reprojecta
+gdf = gpd.read_file(gjson_path)
+gdf = gdf.to_crs(raster_crs)      
+
+# Extreu geometries
+geoms = [json.loads(gdf.to_json())["features"][0]["geometry"]]
+
+# Obre raster i retalla
+with rasterio.open(raster_path) as src:
+    out_image, out_transform = mask(src, geoms, crop=True)
+    out_meta = src.meta.copy()
+
+out_meta.update({
+    "driver": "GTiff",
+    "height": out_image.shape[1],
+    "width": out_image.shape[2],
+    "transform": out_transform
+})
+
+# Desa el fitxer
+with rasterio.open(out_path, "w", **out_meta) as dst:
+    dst.write(out_image)
+
+print("✔ Retallat guardat a:", out_path)
